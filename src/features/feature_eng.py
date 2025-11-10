@@ -23,7 +23,7 @@ import pandas as pd
 
 def add_harmonics(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add 2nd and 3rd harmonic components of day-of-year seasonality.
+    Add 1st harmonic component of day-of-year seasonality.
 
     Args:
         df: DataFrame with day_of_year column
@@ -38,9 +38,9 @@ def add_harmonics(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     doy = df['day_of_year'].astype(float)
 
-    for k in (2, 3):
-        df[f'doy_sin_{k}'] = np.sin(2 * np.pi * k * doy / 365.0)
-        df[f'doy_cos_{k}'] = np.cos(2 * np.pi * k * doy / 365.0)
+    # Only 1st harmonic for v3
+    df['doy_sin_1'] = np.sin(2 * np.pi * 1 * doy / 365.0)
+    df['doy_cos_1'] = np.cos(2 * np.pi * 1 * doy / 365.0)
 
     return df
 
@@ -77,6 +77,76 @@ def add_physics_transforms(df: pd.DataFrame) -> pd.DataFrame:
 
         if hrrr_col in df.columns and rap_col in df.columns:
             df[f'delta_hrrr_rap_{lead}'] = df[hrrr_col] - df[rap_col]
+
+    return df
+
+
+def add_lead_slopes(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add lead slopes for model forecasts.
+
+    Slopes capture temperature change trends:
+    - hrrr_slope_57 = (f07 - f05) / 2
+    - gfs_slope_57 = (f07 - f05) / 2
+    - rap_slope_57 = (f07 - f05) / 2
+
+    Args:
+        df: DataFrame with forecast columns
+
+    Returns:
+        DataFrame with added slope features
+    """
+    df = df.copy()
+
+    # HRRR slope
+    if 'knyc_hrrr_f05_c' in df.columns and 'knyc_hrrr_f07_c' in df.columns:
+        df['hrrr_slope_57'] = (df['knyc_hrrr_f07_c'] - df['knyc_hrrr_f05_c']) / 2.0
+
+    # GFS slope
+    if 'klga_gfs_f05_c' in df.columns and 'klga_gfs_f07_c' in df.columns:
+        df['gfs_slope_57'] = (df['klga_gfs_f07_c'] - df['klga_gfs_f05_c']) / 2.0
+
+    # RAP slope
+    if 'klga_rap_f05_c' in df.columns and 'klga_rap_f07_c' in df.columns:
+        df['rap_slope_57'] = (df['klga_rap_f07_c'] - df['klga_rap_f05_c']) / 2.0
+
+    return df
+
+
+def add_cold_regime_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add cold regime indicators and interactions.
+
+    Cold regime: knyc_hrrr_f06_c < 5°C
+    Interactions with:
+    - Dewpoint depression at both stations
+    - Mean sea level pressure
+
+    Args:
+        df: DataFrame with forecast and observation columns
+
+    Returns:
+        DataFrame with added cold regime features
+    """
+    df = df.copy()
+
+    # Cold regime flag
+    if 'knyc_hrrr_f06_c' in df.columns:
+        df['cold'] = (df['knyc_hrrr_f06_c'] < 5.0).astype('int8')
+
+        # Interactions with dewpoint depression
+        if 'knyc_dp_dep' in df.columns:
+            df['cold_x_dp_knyc'] = df['cold'] * df['knyc_dp_dep']
+
+        if 'klga_dp_dep' in df.columns:
+            df['cold_x_dp_klga'] = df['cold'] * df['klga_dp_dep']
+
+        # Interaction with MSLP (mean sea level pressure)
+        # Look for MSLP columns
+        mslp_cols = [c for c in df.columns if 'mslp' in c.lower() or 'pressure' in c.lower()]
+        if mslp_cols:
+            # Use the first available pressure column
+            df['cold_x_mslp'] = df['cold'] * df[mslp_cols[0]]
 
     return df
 
@@ -224,7 +294,7 @@ def add_hist_context(main_df: pd.DataFrame, hist_path: Optional[str]) -> pd.Data
     return result
 
 
-def prune_high_missingness(df: pd.DataFrame, threshold: float = 0.6) -> Tuple[pd.DataFrame, list]:
+def prune_high_missingness(df: pd.DataFrame, threshold: float = 0.5) -> Tuple[pd.DataFrame, list]:
     """
     Remove features with missing ratio > threshold.
 
@@ -232,7 +302,7 @@ def prune_high_missingness(df: pd.DataFrame, threshold: float = 0.6) -> Tuple[pd
 
     Args:
         df: DataFrame with features
-        threshold: Maximum allowed missing ratio (default 0.6)
+        threshold: Maximum allowed missing ratio (default 0.5)
 
     Returns:
         Tuple of (pruned DataFrame, list of dropped column names)
@@ -302,19 +372,22 @@ def build_features(df: pd.DataFrame, hist_path: Optional[str] = None,
                   use_winsorize: bool = True,
                   train_mask: Optional[pd.Series] = None) -> Tuple[pd.DataFrame, str, dict]:
     """
-    Main feature engineering pipeline.
+    Main feature engineering pipeline (v3 simplified).
 
     Applies all feature engineering steps in sequence:
-    1. Seasonal harmonics
-    2. Physics transforms
-    3. Circular wind handling
-    4. Historical context
-    5. High missingness pruning
-    6. Target winsorization (optional)
+    1. Seasonal harmonics (1st order only)
+    2. Physics transforms (dewpoint depression, cross-model spreads)
+    3. Lead slopes (HRRR, GFS, RAP)
+    4. Cold regime features and interactions
+    5. Circular wind handling
+    6. High missingness pruning (>50%)
+    7. Target winsorization (optional)
+
+    Note: Historical context features removed in v3.
 
     Args:
         df: Input DataFrame
-        hist_path: Path to historical pickle file (optional)
+        hist_path: Path to historical pickle file (deprecated, ignored in v3)
         use_winsorize: Whether to winsorize the target (default True)
         train_mask: Boolean mask for training rows (for winsorization)
 
@@ -327,17 +400,18 @@ def build_features(df: pd.DataFrame, hist_path: Optional[str] = None,
     metadata = {
         'dropped_cols': [],
         'added_features': [],
-        'hist_path': hist_path,
-        'winsorized': use_winsorize
+        'hist_path': None,  # Not used in v3
+        'winsorized': use_winsorize,
+        'version': 'v3'
     }
 
     original_cols = set(df.columns)
 
-    print("Feature Engineering Pipeline")
+    print("Feature Engineering Pipeline (v3 Simplified)")
     print("=" * 80)
 
-    # 1. Harmonics
-    print("\n[1/6] Adding seasonal harmonics...")
+    # 1. Harmonics (1st order only)
+    print("\n[1/7] Adding seasonal harmonics (1st order)...")
     df = add_harmonics(df)
     new_cols = set(df.columns) - original_cols
     print(f"  Added {len(new_cols)} harmonic features: {sorted(new_cols)}")
@@ -345,7 +419,7 @@ def build_features(df: pd.DataFrame, hist_path: Optional[str] = None,
     original_cols = set(df.columns)
 
     # 2. Physics transforms
-    print("\n[2/6] Adding physics-inspired transforms...")
+    print("\n[2/7] Adding physics-inspired transforms...")
     df = add_physics_transforms(df)
     new_cols = set(df.columns) - original_cols
     print(f"  Added {len(new_cols)} physics features")
@@ -354,31 +428,38 @@ def build_features(df: pd.DataFrame, hist_path: Optional[str] = None,
     metadata['added_features'].extend(new_cols)
     original_cols = set(df.columns)
 
-    # 3. Wind handling
-    print("\n[3/6] Handling circular wind features...")
+    # 3. Lead slopes
+    print("\n[3/7] Adding lead slopes...")
+    df = add_lead_slopes(df)
+    new_cols = set(df.columns) - original_cols
+    print(f"  Added {len(new_cols)} slope features")
+    if new_cols:
+        print(f"    {sorted(new_cols)}")
+    metadata['added_features'].extend(new_cols)
+    original_cols = set(df.columns)
+
+    # 4. Cold regime features
+    print("\n[4/7] Adding cold regime features and interactions...")
+    df = add_cold_regime_features(df)
+    new_cols = set(df.columns) - original_cols
+    print(f"  Added {len(new_cols)} cold regime features")
+    if new_cols:
+        print(f"    {sorted(new_cols)}")
+    metadata['added_features'].extend(new_cols)
+    original_cols = set(df.columns)
+
+    # 5. Wind handling
+    print("\n[5/7] Handling circular wind features...")
     df = handle_circular_wind(df)
     new_cols = set(df.columns) - original_cols
     print(f"  Added {len(new_cols)} wind missing flags")
     metadata['added_features'].extend(new_cols)
     original_cols = set(df.columns)
 
-    # 4. Historical context
-    print("\n[4/6] Adding historical regime context...")
-    if hist_path:
-        df = add_hist_context(df, hist_path)
-        new_cols = set(df.columns) - original_cols
-        print(f"  Added {len(new_cols)} historical features")
-        if new_cols:
-            print(f"    {sorted(new_cols)}")
-        metadata['added_features'].extend(new_cols)
-    else:
-        print("  Skipped (no hist_path provided)")
-    original_cols = set(df.columns)
-
-    # 5. Prune high missingness
-    print("\n[5/6] Pruning features with high missingness...")
-    df, dropped = prune_high_missingness(df, threshold=0.6)
-    print(f"  Dropped {len(dropped)} features with >60% missing")
+    # 6. Prune high missingness
+    print("\n[6/7] Pruning features with high missingness...")
+    df, dropped = prune_high_missingness(df, threshold=0.5)
+    print(f"  Dropped {len(dropped)} features with >50% missing")
     if dropped:
         print(f"    Top dropped: {dropped[:5]}")
     metadata['dropped_cols'] = dropped
@@ -392,26 +473,26 @@ def build_features(df: pd.DataFrame, hist_path: Optional[str] = None,
             df = df.drop(columns=object_cols)
             metadata['dropped_cols'].extend(object_cols)
 
-    # 6. Winsorize target
+    # 7. Winsorize target
     label_col = 'err_hrrr_c'
     if use_winsorize and label_col in df.columns:
-        print("\n[6/6] Winsorizing target label...")
+        print("\n[7/7] Winsorizing target label...")
         df, label_col = winsorize_label(df, label_col, train_mask)
         print(f"  Using label: {label_col}")
     else:
-        print("\n[6/6] Skipping winsorization")
+        print("\n[7/7] Skipping winsorization")
 
     metadata['label_col'] = label_col
 
     # Final feature count
     exclude_cols = ['date', 'target_knyc_high_c', 'err_hrrr_c', 'err_hrrr_c_wins',
-                    'month', 'month_cat', 'day_of_year']
+                    'month', 'month_cat', 'day_of_year', 'cold']
     feature_cols = [c for c in df.columns if c not in exclude_cols]
     metadata['final_feature_count'] = len(feature_cols)
     metadata['final_features'] = feature_cols
 
     print(f"\n{'=' * 80}")
-    print(f"Feature engineering complete!")
+    print(f"Feature engineering complete! (v3)")
     print(f"  Final feature count: {len(feature_cols)}")
     print(f"  Label column: {label_col}")
     print(f"{'=' * 80}\n")
