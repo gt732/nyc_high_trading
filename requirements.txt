@@ -1,0 +1,6 @@
+autogluon.tabular
+pandas
+typing_extensions
+autogluon.tabular[lightgbm]==1.4.0
+torch
+ray>=2.10.0,<2.45.0

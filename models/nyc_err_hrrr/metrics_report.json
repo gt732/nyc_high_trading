@@ -1,0 +1,40 @@
+{
+  "training_date": "2025-11-09T21:58:25.482115",
+  "data_file": "ml_training_data_final.csv",
+  "date_range": {
+    "start": "2021-01-01T00:00:00",
+    "end": "2025-10-30T00:00:00",
+    "total_days": 1727
+  },
+  "split": {
+    "train_days": 1667,
+    "val_days": 60
+  },
+  "validation_metrics": [
+    {
+      "model": "LightGBM",
+      "mae": 0.6606,
+      "rmse": 0.8182,
+      "r2": 0.4489,
+      "n_samples": 60
+    },
+    {
+      "model": "knyc_hrrr_f06_c",
+      "mae": 21.566,
+      "rmse": 22.3406,
+      "r2": -409.8989,
+      "n_samples": 60
+    },
+    {
+      "model": "knyc_yesterday_high_c",
+      "mae": 21.9126,
+      "rmse": 22.5435,
+      "r2": -417.3988,
+      "n_samples": 60
+    }
+  ],
+  "phase_1_threshold": {
+    "target_mae": 1.5,
+    "achieved": true
+  }
+}
