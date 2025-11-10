@@ -262,13 +262,171 @@ def train_lightgbm_quantile(X_train, y_train, X_val, y_val, sample_weight=None, 
     return model
 
 
+def run_quantile_hpo(X_train, y_train, df_train, label_col, seed=42):
+    """
+    Run hyperparameter optimization for Quantile(0.5) model using 4-fold rolling CV.
+
+    Search space:
+    - num_leaves: {15, 31, 63}
+    - min_data_in_leaf: {40, 60, 100}
+    - feature_fraction: {0.6, 0.75, 0.9}
+    - bagging_fraction: {0.6, 0.7, 0.8}
+    - reg_lambda: {0.5, 1.0, 1.5, 2.0}
+    - learning_rate: {0.005, 0.01}
+
+    Winter folds (containing Dec-Feb) are weighted 2.0, others 1.0.
+
+    Returns:
+        Best parameters dict and HPO results list
+    """
+    print("\n  Running Quantile HPO with 4-fold rolling CV...")
+
+    # Define search space
+    param_grid = {
+        'num_leaves': [15, 31, 63],
+        'min_data_in_leaf': [40, 60, 100],
+        'feature_fraction': [0.6, 0.75, 0.9],
+        'bagging_fraction': [0.6, 0.7, 0.8],
+        'reg_lambda': [0.5, 1.0, 1.5, 2.0],
+        'learning_rate': [0.005, 0.01],
+    }
+
+    # Create 4 rolling folds
+    n_folds = 4
+    fold_size = len(X_train) // n_folds
+    folds = []
+    for i in range(n_folds):
+        train_end = (i + 1) * fold_size
+        if i < n_folds - 1:
+            train_idx = list(range(train_end))
+            val_idx = list(range(train_end, train_end + fold_size))
+        else:
+            # Last fold uses all remaining data
+            train_idx = list(range(train_end))
+            val_idx = list(range(train_end, len(X_train)))
+        folds.append((train_idx, val_idx))
+
+    # Check if each fold is winter (contains Dec-Feb)
+    def is_winter_fold(val_idx, df_train):
+        months = df_train.iloc[val_idx]['month'].values
+        return any(m in [12, 1, 2] for m in months)
+
+    fold_weights = []
+    for _, val_idx in folds:
+        weight = 2.0 if is_winter_fold(val_idx, df_train) else 1.0
+        fold_weights.append(weight)
+
+    print(f"    Fold weights: {fold_weights} (2.0 for winter, 1.0 for others)")
+
+    # Random search through param combinations (sample 100 configs)
+    import itertools
+    import random
+    all_configs = list(itertools.product(
+        param_grid['num_leaves'],
+        param_grid['min_data_in_leaf'],
+        param_grid['feature_fraction'],
+        param_grid['bagging_fraction'],
+        param_grid['reg_lambda'],
+        param_grid['learning_rate']
+    ))
+
+    random.seed(seed)
+    if len(all_configs) > 100:
+        configs_to_test = random.sample(all_configs, 100)
+    else:
+        configs_to_test = all_configs
+
+    print(f"    Testing {len(configs_to_test)} parameter configurations...")
+
+    hpo_results = []
+    best_score = float('inf')
+    best_params = None
+
+    for config_idx, config in enumerate(configs_to_test):
+        num_leaves, min_data, feat_frac, bag_frac, reg_l, lr = config
+
+        params = {
+            'objective': 'quantile',
+            'alpha': 0.5,
+            'learning_rate': lr,
+            'num_leaves': num_leaves,
+            'min_data_in_leaf': min_data,
+            'feature_fraction': feat_frac,
+            'bagging_fraction': bag_frac,
+            'bagging_freq': 1,
+            'reg_lambda': reg_l,
+            'device_type': 'cpu',
+            'verbosity': -1,
+            'seed': seed,
+            'deterministic': True,
+        }
+
+        fold_scores = []
+        for fold_idx, (train_idx, val_idx) in enumerate(folds):
+            X_fold_train = X_train.iloc[train_idx]
+            y_fold_train = y_train.iloc[train_idx]
+            X_fold_val = X_train.iloc[val_idx]
+            y_fold_val = y_train.iloc[val_idx]
+
+            train_data = lgb.Dataset(X_fold_train, label=y_fold_train)
+            val_data = lgb.Dataset(X_fold_val, label=y_fold_val, reference=train_data)
+
+            model = lgb.train(
+                params,
+                train_data,
+                num_boost_round=20000,
+                valid_sets=[val_data],
+                callbacks=[lgb.early_stopping(stopping_rounds=600), lgb.log_evaluation(period=0)]
+            )
+
+            y_pred = model.predict(X_fold_val)
+            mae = mean_absolute_error(y_fold_val, y_pred)
+            fold_scores.append(mae)
+
+        # Compute weighted average score
+        weighted_score = sum(s * w for s, w in zip(fold_scores, fold_weights)) / sum(fold_weights)
+
+        hpo_results.append({
+            'config_idx': config_idx,
+            'num_leaves': num_leaves,
+            'min_data_in_leaf': min_data,
+            'feature_fraction': feat_frac,
+            'bagging_fraction': bag_frac,
+            'reg_lambda': reg_l,
+            'learning_rate': lr,
+            'fold_scores': fold_scores,
+            'weighted_score': weighted_score
+        })
+
+        if weighted_score < best_score:
+            best_score = weighted_score
+            best_params = params.copy()
+
+        if (config_idx + 1) % 20 == 0:
+            print(f"      Tested {config_idx + 1}/{len(configs_to_test)} configs, best score: {best_score:.4f}")
+
+    print(f"\n    HPO complete! Best weighted score: {best_score:.4f}")
+    print(f"    Best params: num_leaves={best_params['num_leaves']}, min_data={best_params['min_data_in_leaf']}, "
+          f"feat_frac={best_params['feature_fraction']}, bag_frac={best_params['bagging_fraction']}, "
+          f"reg_lambda={best_params['reg_lambda']}, lr={best_params['learning_rate']}")
+
+    return best_params, hpo_results
+
+
 def train_winter_specialist(X_train, y_train, X_val, y_val, sample_weight=None, seed=42):
     """
-    Train winter specialist for Dec-Feb months.
+    Train winter specialist for Dec-Feb months (v3.1 re-regularized).
 
-    Uses Huber objective with winter-focused hyperparameters.
+    Uses L1 objective with tighter regularization:
+    - objective: regression_l1
+    - num_leaves: 15
+    - min_data_in_leaf: 120
+    - feature_fraction: 0.6
+    - bagging_fraction: 0.7
+    - reg_lambda: 1.8
+    - learning_rate: 0.01
     """
-    print(f"\n  Training winter specialist (Dec-Feb)...")
+    print(f"\n  Training winter specialist (Dec-Feb, v3.1 re-regularized)...")
 
     # Filter to winter months (12, 1, 2)
     train_mask = X_train['month'].isin([12, 1, 2])
@@ -285,18 +443,16 @@ def train_winter_specialist(X_train, y_train, X_val, y_val, sample_weight=None, 
     X_val_winter = X_val[val_mask] if val_mask.sum() > 0 else X_train_winter.iloc[:50]
     y_val_winter = y_val[val_mask] if val_mask.sum() > 0 else y_train_winter.iloc[:50]
 
-    # Huber objective for winter specialist
+    # v3.1 re-regularized params
     params = {
-        'objective': 'huber',
-        'alpha': 0.9,
-        'huber_delta': 0.5,
-        'learning_rate': 0.005,
-        'num_leaves': 31,
-        'min_data_in_leaf': 30,  # Lower for smaller dataset
-        'feature_fraction': 0.8,
+        'objective': 'regression_l1',
+        'learning_rate': 0.01,
+        'num_leaves': 15,
+        'min_data_in_leaf': 120,
+        'feature_fraction': 0.6,
         'bagging_fraction': 0.7,
         'bagging_freq': 1,
-        'reg_lambda': 1.0,
+        'reg_lambda': 1.8,
         'device_type': 'cpu',
         'verbosity': -1,
         'seed': seed,
@@ -310,9 +466,9 @@ def train_winter_specialist(X_train, y_train, X_val, y_val, sample_weight=None, 
     model = lgb.train(
         params,
         train_data,
-        num_boost_round=40000,
+        num_boost_round=20000,
         valid_sets=[val_data],
-        callbacks=[lgb.early_stopping(stopping_rounds=600), lgb.log_evaluation(period=500)]
+        callbacks=[lgb.early_stopping(stopping_rounds=500), lgb.log_evaluation(period=500)]
     )
 
     print(f"    Specialist trained on {train_mask.sum()} winter samples")
@@ -373,20 +529,147 @@ def apply_doy_debiasing(df_train, df_val, global_preds_train, global_preds_val, 
     return debiased_preds, doy_bias
 
 
-def blend_winter_predictions(df, global_preds, winter_preds, weight=0.5):
+def tune_winter_gating(X_train, y_train, df_train, global_model, winter_model, all_features, label_col, seed=42):
     """
-    Blend global and winter specialist predictions.
+    Tune winter gating parameters on rolling winter folds.
 
-    For winter months (12, 1, 2) or cold==1:
-        blended = weight * global + (1-weight) * winter
-    Otherwise:
-        blended = global
+    Discrete search:
+    - cold threshold t in {3, 5, 7, 9} Celsius on `knyc_hrrr_f06_c`
+    - blend weight w in {0.3, 0.4, 0.5}
+    - rule: if month in {12, 1, 2} or `knyc_hrrr_f06_c < t` then
+              pred_blend = (1 - w) * pred_global + w * pred_winter
+            else pred_global
+
+    Choose t and w that minimize average winter MAE across folds,
+    breaking ties by winter P90.
+
+    Returns:
+        Best threshold, best weight, gating results list
+    """
+    print("\n  Tuning winter gating on rolling winter folds...")
+
+    # Create rolling folds that include winter months
+    n_folds = 4
+    fold_size = len(X_train) // n_folds
+    folds = []
+
+    for i in range(n_folds):
+        train_end = (i + 1) * fold_size
+        if i < n_folds - 1:
+            train_idx = list(range(train_end))
+            val_idx = list(range(train_end, train_end + fold_size))
+        else:
+            train_idx = list(range(train_end))
+            val_idx = list(range(train_end, len(X_train)))
+        folds.append((train_idx, val_idx))
+
+    # Filter to only winter folds
+    winter_folds = []
+    for train_idx, val_idx in folds:
+        months = df_train.iloc[val_idx]['month'].values
+        if any(m in [12, 1, 2] for m in months):
+            winter_folds.append((train_idx, val_idx))
+
+    if len(winter_folds) == 0:
+        print("    Warning: No winter folds found, using default t=5, w=0.5")
+        return 5.0, 0.5, []
+
+    print(f"    Using {len(winter_folds)} winter folds")
+
+    # Define search grid
+    thresholds = [3.0, 5.0, 7.0, 9.0]
+    weights = [0.3, 0.4, 0.5]
+
+    gating_results = []
+    best_score = float('inf')
+    best_t = 5.0
+    best_w = 0.5
+    best_p90 = float('inf')
+
+    for t in thresholds:
+        for w in weights:
+            fold_maes = []
+            fold_p90s = []
+
+            for fold_idx, (_, val_idx) in enumerate(winter_folds):
+                df_val_fold = df_train.iloc[val_idx]
+                X_val_fold = X_train.iloc[val_idx][all_features]
+                y_val_fold = y_train.iloc[val_idx]
+
+                # Get predictions
+                global_pred = global_model.predict(X_val_fold)
+                winter_pred = winter_model.predict(X_val_fold[all_features])
+
+                # Apply gating
+                blended_pred = global_pred.copy()
+                winter_mask = df_val_fold['month'].isin([12, 1, 2])
+
+                if 'knyc_hrrr_f06_c' in df_val_fold.columns:
+                    cold_mask = df_val_fold['knyc_hrrr_f06_c'] < t
+                    winter_mask = winter_mask | cold_mask
+
+                blended_pred[winter_mask] = ((1 - w) * global_pred[winter_mask] +
+                                              w * winter_pred[winter_mask])
+
+                # Compute winter metrics
+                winter_only_mask = df_val_fold['month'].isin([12, 1, 2])
+                if winter_only_mask.sum() > 0:
+                    y_true_winter = y_val_fold[winter_only_mask]
+                    y_pred_winter = blended_pred[winter_only_mask]
+                    abs_err = np.abs(y_true_winter - y_pred_winter)
+
+                    mae = mean_absolute_error(y_true_winter, y_pred_winter)
+                    p90 = np.percentile(abs_err, 90)
+
+                    fold_maes.append(mae)
+                    fold_p90s.append(p90)
+
+            if len(fold_maes) > 0:
+                avg_mae = np.mean(fold_maes)
+                avg_p90 = np.mean(fold_p90s)
+
+                gating_results.append({
+                    'threshold': t,
+                    'weight': w,
+                    'avg_mae': avg_mae,
+                    'avg_p90': avg_p90,
+                    'fold_maes': fold_maes
+                })
+
+                # Update best (prioritize MAE, break ties with P90)
+                if avg_mae < best_score or (avg_mae == best_score and avg_p90 < best_p90):
+                    best_score = avg_mae
+                    best_t = t
+                    best_w = w
+                    best_p90 = avg_p90
+
+    print(f"    Best gating: threshold={best_t}, weight={best_w}, winter MAE={best_score:.4f}, P90={best_p90:.4f}")
+
+    return best_t, best_w, gating_results
+
+
+def blend_winter_predictions(df, global_preds, winter_preds, weight=0.5, threshold=5.0, use_gating=True):
+    """
+    Blend global and winter specialist predictions with optional gating.
+
+    If use_gating:
+        For month in {12, 1, 2} or knyc_hrrr_f06_c < threshold:
+            blended = (1-weight) * global + weight * winter
+        Otherwise:
+            blended = global
+    Else (v3 behavior):
+        For month in {12, 1, 2} or cold==1:
+            blended = weight * global + (1-weight) * winter
+        Otherwise:
+            blended = global
 
     Args:
-        df: DataFrame with 'month' and optionally 'cold' columns
+        df: DataFrame with 'month' and optionally 'cold' or 'knyc_hrrr_f06_c' columns
         global_preds: Global model predictions
         winter_preds: Winter specialist predictions
-        weight: Weight for global model (default 0.5)
+        weight: Weight for winter specialist (default 0.5)
+        threshold: Cold threshold in Celsius for gating (default 5.0)
+        use_gating: Use v3.1 gating rule (default True)
 
     Returns:
         Blended predictions
@@ -396,14 +679,24 @@ def blend_winter_predictions(df, global_preds, winter_preds, weight=0.5):
     if winter_preds is None:
         return blended
 
-    # Identify winter samples
-    winter_mask = df['month'].isin([12, 1, 2])
-    if 'cold' in df.columns:
-        winter_mask = winter_mask | (df['cold'] == 1)
+    if use_gating:
+        # v3.1 gating rule
+        winter_mask = df['month'].isin([12, 1, 2])
+        if 'knyc_hrrr_f06_c' in df.columns:
+            cold_mask = df['knyc_hrrr_f06_c'] < threshold
+            winter_mask = winter_mask | cold_mask
 
-    # Blend for winter samples
-    blended[winter_mask] = (weight * global_preds[winter_mask] +
-                            (1 - weight) * winter_preds[winter_mask])
+        # Blend: (1-w)*global + w*winter
+        blended[winter_mask] = ((1 - weight) * global_preds[winter_mask] +
+                                weight * winter_preds[winter_mask])
+    else:
+        # v3 behavior: weight is for global, (1-weight) for winter
+        winter_mask = df['month'].isin([12, 1, 2])
+        if 'cold' in df.columns:
+            winter_mask = winter_mask | (df['cold'] == 1)
+
+        blended[winter_mask] = (weight * global_preds[winter_mask] +
+                                (1 - weight) * winter_preds[winter_mask])
 
     return blended
 
@@ -443,24 +736,28 @@ def plot_calibration_curve(y_true, y_pred, save_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Train v3 winter-focused HRRR error correction model')
+    parser = argparse.ArgumentParser(description='Train v3.1 quantile-winter HRRR error correction model')
     parser.add_argument('--csv_path', type=str, default='ml_training_data_final.csv',
                         help='Path to training data CSV')
-    parser.add_argument('--output_dir', type=str, default='models/nyc_err_hrrr_v3',
+    parser.add_argument('--output_dir', type=str, default='models/nyc_err_hrrr_v3_1',
                         help='Output directory for model and artifacts')
     parser.add_argument('--val_days', type=int, default=60,
                         help='Number of days to hold out for validation')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for reproducibility')
-    parser.add_argument('--skip_winter_specialist', action='store_true',
-                        help='Skip training winter specialist')
-    parser.add_argument('--skip_doy_debiasing', action='store_true',
-                        help='Skip DOY residual debiasing')
+    parser.add_argument('--run_quantile_hpo', type=int, default=0,
+                        help='Run Quantile HPO (1=yes, 0=no)')
+    parser.add_argument('--disable_doy_debias', type=int, default=1,
+                        help='Disable DOY debiasing (1=yes, 0=no) - default disabled in v3.1')
+    parser.add_argument('--train_winter', type=int, default=1,
+                        help='Train winter specialist (1=yes, 0=no)')
+    parser.add_argument('--tune_winter_gating', type=int, default=1,
+                        help='Tune winter gating parameters (1=yes, 0=no)')
 
     args = parser.parse_args()
 
     print(f"\n{'='*80}")
-    print(f"NYC HRRR Error Correction - v3 Winter-Focused Training")
+    print(f"NYC HRRR Error Correction - v3.1 Quantile-Winter Training")
     print(f"{'='*80}\n")
 
     # Set seeds
@@ -530,71 +827,107 @@ def main():
     winter_count = (train_weights > 1.0).sum()
     print(f"    Winter/cold samples: {winter_count}/{len(train_weights)} ({100*winter_count/len(train_weights):.1f}%)")
 
-    # 4. Train global models
-    print(f"\n[4/8] Training three global models (L1, Huber, Quantile)...")
-
+    # 4. Train global model (with optional HPO)
     out_path = Path(args.output_dir)
     if out_path.exists():
         print(f"  Removing existing output directory: {out_path}")
         shutil.rmtree(out_path)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    # Train all three models
-    model_l1 = train_lightgbm_l1(X_train, y_train, X_val, y_val, sample_weight=train_weights, seed=args.seed)
-    model_huber = train_lightgbm_huber(X_train, y_train, X_val, y_val, sample_weight=train_weights, seed=args.seed)
-    model_quantile = train_lightgbm_quantile(X_train, y_train, X_val, y_val, sample_weight=train_weights, seed=args.seed)
+    if args.run_quantile_hpo:
+        print(f"\n[4/8] Running Quantile HPO and training final model...")
+        best_params, hpo_results = run_quantile_hpo(X_train, y_train, train_df, label_col, seed=args.seed)
 
-    # Get predictions
-    val_pred_l1 = model_l1.predict(X_val)
-    val_pred_huber = model_huber.predict(X_val)
-    val_pred_quantile = model_quantile.predict(X_val)
+        # Save HPO results
+        hpo_df = pd.DataFrame(hpo_results)
+        hpo_df.to_csv(out_path / 'hpo_results.csv', index=False)
 
-    # Get training predictions for DOY debiasing
-    train_pred_l1 = model_l1.predict(X_train)
-    train_pred_huber = model_huber.predict(X_train)
-    train_pred_quantile = model_quantile.predict(X_train)
+        # Train final model with best params
+        print(f"\n  Training final Quantile model with best params...")
+        train_data = lgb.Dataset(X_train, label=y_train, weight=train_weights)
+        val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
 
-    # Evaluate
-    mae_l1 = mean_absolute_error(y_val, val_pred_l1)
-    mae_huber = mean_absolute_error(y_val, val_pred_huber)
-    mae_quantile = mean_absolute_error(y_val, val_pred_quantile)
+        global_model = lgb.train(
+            best_params,
+            train_data,
+            num_boost_round=20000,
+            valid_sets=[val_data],
+            callbacks=[lgb.early_stopping(stopping_rounds=600), lgb.log_evaluation(period=1000)]
+        )
 
-    print(f"\n  Global model results:")
-    print(f"    L1 MAE:       {mae_l1:.4f} C")
-    print(f"    Huber MAE:    {mae_huber:.4f} C")
-    print(f"    Quantile MAE: {mae_quantile:.4f} C")
-
-    # Choose best global model
-    best_mae = min(mae_l1, mae_huber, mae_quantile)
-    if mae_l1 == best_mae:
-        global_model = model_l1
-        global_pred_val = val_pred_l1
-        global_pred_train = train_pred_l1
-        global_name = "l1"
-    elif mae_huber == best_mae:
-        global_model = model_huber
-        global_pred_val = val_pred_huber
-        global_pred_train = train_pred_huber
-        global_name = "huber"
-    else:
-        global_model = model_quantile
-        global_pred_val = val_pred_quantile
-        global_pred_train = train_pred_quantile
+        global_pred_val = global_model.predict(X_val)
+        global_pred_train = global_model.predict(X_train)
         global_name = "quantile"
+        best_mae = mean_absolute_error(y_val, global_pred_val)
 
-    print(f"  Using {global_name.upper()} model as global (best MAE: {best_mae:.4f} C)")
+        # Save model and params
+        global_model.save_model(str(out_path / 'global_quantile_best.txt'))
+        with open(out_path / 'global_quantile_best_params.json', 'w') as f:
+            json.dump(best_params, f, indent=2)
 
-    # Save all models
-    model_l1.save_model(str(out_path / 'model_l1.txt'))
-    model_huber.save_model(str(out_path / 'model_huber.txt'))
-    model_quantile.save_model(str(out_path / 'model_quantile.txt'))
-    global_model.save_model(str(out_path / 'global_model.txt'))
+        print(f"  Quantile model MAE: {best_mae:.4f} C")
+
+    else:
+        print(f"\n[4/8] Training three global models (L1, Huber, Quantile)...")
+
+        # Train all three models
+        model_l1 = train_lightgbm_l1(X_train, y_train, X_val, y_val, sample_weight=train_weights, seed=args.seed)
+        model_huber = train_lightgbm_huber(X_train, y_train, X_val, y_val, sample_weight=train_weights, seed=args.seed)
+        model_quantile = train_lightgbm_quantile(X_train, y_train, X_val, y_val, sample_weight=train_weights, seed=args.seed)
+
+        # Get predictions
+        val_pred_l1 = model_l1.predict(X_val)
+        val_pred_huber = model_huber.predict(X_val)
+        val_pred_quantile = model_quantile.predict(X_val)
+
+        # Get training predictions
+        train_pred_l1 = model_l1.predict(X_train)
+        train_pred_huber = model_huber.predict(X_train)
+        train_pred_quantile = model_quantile.predict(X_train)
+
+        # Evaluate
+        mae_l1 = mean_absolute_error(y_val, val_pred_l1)
+        mae_huber = mean_absolute_error(y_val, val_pred_huber)
+        mae_quantile = mean_absolute_error(y_val, val_pred_quantile)
+
+        print(f"\n  Global model results:")
+        print(f"    L1 MAE:       {mae_l1:.4f} C")
+        print(f"    Huber MAE:    {mae_huber:.4f} C")
+        print(f"    Quantile MAE: {mae_quantile:.4f} C")
+
+        # Choose best global model
+        best_mae = min(mae_l1, mae_huber, mae_quantile)
+        if mae_l1 == best_mae:
+            global_model = model_l1
+            global_pred_val = val_pred_l1
+            global_pred_train = train_pred_l1
+            global_name = "l1"
+        elif mae_huber == best_mae:
+            global_model = model_huber
+            global_pred_val = val_pred_huber
+            global_pred_train = train_pred_huber
+            global_name = "huber"
+        else:
+            global_model = model_quantile
+            global_pred_val = val_pred_quantile
+            global_pred_train = train_pred_quantile
+            global_name = "quantile"
+
+        print(f"  Using {global_name.upper()} model as global (best MAE: {best_mae:.4f} C)")
+
+        # Save all models
+        model_l1.save_model(str(out_path / 'model_l1.txt'))
+        model_huber.save_model(str(out_path / 'model_huber.txt'))
+        model_quantile.save_model(str(out_path / 'model_quantile.txt'))
+        global_model.save_model(str(out_path / 'global_model.txt'))
 
     # 5. Train winter specialist
     winter_specialist = None
     val_pred_winter = None
+    gating_threshold = 5.0
+    gating_weight = 0.5
 
-    if not args.skip_winter_specialist:
+    if args.train_winter:
         print(f"\n[5/8] Training winter specialist...")
         winter_specialist = train_winter_specialist(
             X_train, y_train, X_val, y_val,
@@ -610,23 +943,41 @@ def main():
             # Get predictions on full validation set
             feature_cols = [c for c in X_val.columns if c not in ['month', 'month_cat']]
             val_pred_winter = winter_specialist.predict(X_val[feature_cols])
+
+            # Tune gating if requested
+            if args.tune_winter_gating:
+                print(f"\n  Tuning winter gating...")
+                gating_threshold, gating_weight, gating_results = tune_winter_gating(
+                    X_train, y_train, train_df, global_model, winter_specialist, all_features, label_col, seed=args.seed
+                )
+
+                # Save gating results
+                with open(out_path / 'winter_gating.json', 'w') as f:
+                    json.dump({
+                        'threshold': gating_threshold,
+                        'weight': gating_weight,
+                        'results': gating_results
+                    }, f, indent=2)
+
+                winter_specialist.save_model(str(out_path / 'winter_specialist.txt'))
     else:
         print(f"\n[5/8] Skipping winter specialist")
 
     # 6. Blend with winter specialist
     print(f"\n[6/8] Blending global and winter specialist predictions...")
     val_pred_blended = blend_winter_predictions(
-        val_df, global_pred_val, val_pred_winter, weight=0.5
+        val_df, global_pred_val, val_pred_winter,
+        weight=gating_weight, threshold=gating_threshold, use_gating=True
     )
 
     mae_blended = mean_absolute_error(y_val, val_pred_blended)
-    print(f"  Blended MAE: {mae_blended:.4f} C")
+    print(f"  Blended MAE: {mae_blended:.4f} C (threshold={gating_threshold}, weight={gating_weight})")
 
-    # 7. Apply DOY residual debiasing
+    # 7. Apply DOY residual debiasing (disabled by default in v3.1)
     val_pred_debiased = global_pred_val
     doy_bias_map = {}
 
-    if not args.skip_doy_debiasing:
+    if not args.disable_doy_debias:
         print(f"\n[7/8] Applying DOY residual debiasing...")
         val_pred_debiased, doy_bias_map = apply_doy_debiasing(
             train_df, val_df, global_pred_train, global_pred_val, label_col, seed=args.seed
@@ -652,7 +1003,7 @@ def main():
         mae_blended_debiased = mean_absolute_error(y_val, val_pred_blended_debiased)
         print(f"  Blended+Debiased MAE: {mae_blended_debiased:.4f} C")
     else:
-        print(f"\n[7/8] Skipping DOY debiasing")
+        print(f"\n[7/8] Skipping DOY debiasing (disabled in v3.1)")
         mae_blended_debiased = mae_blended
         val_pred_blended_debiased = val_pred_blended
 
