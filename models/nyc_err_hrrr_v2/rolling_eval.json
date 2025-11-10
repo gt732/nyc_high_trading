@@ -1,0 +1,106 @@
+{
+  "configuration": {
+    "train_days": 540,
+    "val_days": 30,
+    "step_days": 100,
+    "num_folds": 5,
+    "seed": 42
+  },
+  "aggregate_metrics": {
+    "mae_mean": 0.97,
+    "mae_std": 0.3611,
+    "mae_min": 0.5195,
+    "mae_max": 1.4958,
+    "rmse_mean": 1.6974,
+    "rmse_std": 1.0529,
+    "r2_mean": 0.3166,
+    "r2_std": 0.2474
+  },
+  "folds": [
+    {
+      "fold": 1,
+      "train_start": "2021-01-01T00:00:00",
+      "train_end": "2022-07-07T00:00:00",
+      "val_start": "2022-07-08T00:00:00",
+      "val_end": "2022-08-06T00:00:00",
+      "train_samples": 540,
+      "val_samples": 30,
+      "baseline_mae": 1.7343,
+      "mae": 0.8962,
+      "rmse": 1.1959,
+      "r2": 0.1587,
+      "monthly_mae": {
+        "month_07": 0.8551,
+        "month_08": 1.0603
+      }
+    },
+    {
+      "fold": 2,
+      "train_start": "2021-04-15T00:00:00",
+      "train_end": "2022-10-15T00:00:00",
+      "val_start": "2022-10-16T00:00:00",
+      "val_end": "2022-11-14T00:00:00",
+      "train_samples": 540,
+      "val_samples": 30,
+      "baseline_mae": 1.5287,
+      "mae": 1.2581,
+      "rmse": 3.5978,
+      "r2": 0.0101,
+      "monthly_mae": {
+        "month_10": 0.5672,
+        "month_11": 2.0477
+      }
+    },
+    {
+      "fold": 3,
+      "train_start": "2021-07-24T00:00:00",
+      "train_end": "2023-01-25T00:00:00",
+      "val_start": "2023-01-26T00:00:00",
+      "val_end": "2023-02-26T00:00:00",
+      "train_samples": 540,
+      "val_samples": 30,
+      "baseline_mae": 2.2878,
+      "mae": 1.4958,
+      "rmse": 2.0405,
+      "r2": 0.4087,
+      "monthly_mae": {
+        "month_01": 2.121,
+        "month_02": 1.3395
+      }
+    },
+    {
+      "fold": 4,
+      "train_start": "2021-11-01T00:00:00",
+      "train_end": "2023-05-11T00:00:00",
+      "val_start": "2023-05-12T00:00:00",
+      "val_end": "2023-06-10T00:00:00",
+      "train_samples": 540,
+      "val_samples": 30,
+      "baseline_mae": 0.8903,
+      "mae": 0.6803,
+      "rmse": 0.9776,
+      "r2": 0.269,
+      "monthly_mae": {
+        "month_05": 0.5721,
+        "month_06": 0.8968
+      }
+    },
+    {
+      "fold": 5,
+      "train_start": "2022-02-13T00:00:00",
+      "train_end": "2023-08-19T00:00:00",
+      "val_start": "2023-08-20T00:00:00",
+      "val_end": "2023-09-19T00:00:00",
+      "train_samples": 540,
+      "val_samples": 30,
+      "baseline_mae": 0.9974,
+      "mae": 0.5195,
+      "rmse": 0.6754,
+      "r2": 0.7365,
+      "monthly_mae": {
+        "month_08": 0.6244,
+        "month_09": 0.4495
+      }
+    }
+  ]
+}
