@@ -54,6 +54,33 @@ def month_metrics(df, y_true_col, y_pred_col):
     return monthly
 
 
+def seasonal_metrics(df, y_true_col, y_pred_col):
+    """Calculate MAE and P90 error by season."""
+    results = {}
+
+    seasons = {
+        'winter': [12, 1, 2],
+        'spring': [3, 4, 5],
+        'summer': [6, 7, 8],
+        'fall': [9, 10, 11]
+    }
+
+    for season_name, months in seasons.items():
+        mask = df['month'].isin(months)
+        if mask.sum() > 0:
+            y_true = df.loc[mask, y_true_col]
+            y_pred = df.loc[mask, y_pred_col]
+            abs_err = np.abs(y_true - y_pred)
+
+            results[season_name] = {
+                'mae': round(mean_absolute_error(y_true, y_pred), 4),
+                'p90': round(np.percentile(abs_err, 90), 4),
+                'n': int(mask.sum())
+            }
+
+    return results
+
+
 def create_rolling_folds(df, train_days=540, val_days=30, step_days=100, min_folds=5):
     """
     Create rolling time-series folds.
@@ -267,6 +294,7 @@ def main():
             'rmse': metrics['rmse'],
             'r2': metrics['r2'],
             'monthly_mae': monthly,
+            'predictions': y_pred,  # Store predictions for seasonal metrics
         }
 
         results.append(fold_result)
@@ -292,6 +320,66 @@ def main():
     print(f"  R2:   mean={np.mean(r2_values):.4f}, std={np.std(r2_values):.4f}, "
           f"min={np.min(r2_values):.4f}, max={np.max(r2_values):.4f}")
 
+    # Compute overall seasonal P90 metrics (across all validation folds combined)
+    print(f"\nComputing seasonal P90 metrics...")
+    all_val_results = []
+    for fold_idx, (train_idx, val_idx) in enumerate(folds):
+        val_df_fold = df_fe.iloc[val_idx]
+        fold_result = pd.DataFrame({
+            'month': val_df_fold['month'],
+            'y_true': val_df_fold['err_hrrr_c'].values,
+            'y_pred': results[fold_idx]['predictions'] if 'predictions' in results[fold_idx] else None
+        })
+        if fold_result['y_pred'].notna().any():
+            all_val_results.append(fold_result)
+
+    if all_val_results:
+        combined_val = pd.concat(all_val_results, ignore_index=True)
+        seasonal_stats = seasonal_metrics(combined_val, 'y_true', 'y_pred')
+
+        # Also compute baseline seasonal metrics if available
+        if 'knyc_hrrr_f06_c' in df_fe.columns and 'target_knyc_high_c' in df_fe.columns:
+            all_baseline_results = []
+            for fold_idx, (train_idx, val_idx) in enumerate(folds):
+                val_df_fold = df_fe.iloc[val_idx]
+                baseline_result = pd.DataFrame({
+                    'month': val_df_fold['month'],
+                    'y_true': val_df_fold['target_knyc_high_c'].values,
+                    'y_baseline': val_df_fold['knyc_hrrr_f06_c'].values
+                })
+                all_baseline_results.append(baseline_result)
+
+            combined_baseline = pd.concat(all_baseline_results, ignore_index=True)
+            seasonal_baseline = seasonal_metrics(combined_baseline, 'y_true', 'y_baseline')
+        else:
+            seasonal_baseline = {}
+
+        # Create seasonal P90 CSV
+        seasonal_records = []
+        for season in ['winter', 'spring', 'summer', 'fall']:
+            record = {'season': season}
+
+            if season in seasonal_stats:
+                record['MAE'] = seasonal_stats[season]['mae']
+                record['P90'] = seasonal_stats[season]['p90']
+                record['n'] = seasonal_stats[season]['n']
+
+            if season in seasonal_baseline:
+                record['baseline_MAE'] = seasonal_baseline[season]['mae']
+                record['baseline_P90'] = seasonal_baseline[season]['p90']
+
+            seasonal_records.append(record)
+
+        seasonal_p90_df = pd.DataFrame(seasonal_records)
+        seasonal_p90_df.to_csv(out_path / 'seasonal_p90.csv', index=False)
+
+        print(f"\n  Seasonal P90 metrics:")
+        for _, row in seasonal_p90_df.iterrows():
+            mae = row.get('MAE', 'N/A')
+            p90 = row.get('P90', 'N/A')
+            n = row.get('n', 0)
+            print(f"    {row['season']:<10} MAE={mae:>6} P90={p90:>6} n={n:>4}")
+
     # Per-fold summary
     print(f"\nPer-Fold Results:")
     print(f"  {'Fold':<6} {'Val Period':<25} {'MAE':<8} {'RMSE':<8} {'R2':<8}")
@@ -304,7 +392,14 @@ def main():
     out_path = Path(args.output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    # Save detailed results as JSON
+    # Save detailed results as JSON (exclude predictions which are numpy arrays)
+    results_for_json = []
+    for r in results:
+        r_copy = r.copy()
+        if 'predictions' in r_copy:
+            del r_copy['predictions']
+        results_for_json.append(r_copy)
+
     summary = {
         'configuration': {
             'train_days': args.train_days,
@@ -323,7 +418,7 @@ def main():
             'r2_mean': round(np.mean(r2_values), 4),
             'r2_std': round(np.std(r2_values), 4),
         },
-        'folds': results,
+        'folds': results_for_json,
     }
 
     with open(out_path / 'rolling_eval.json', 'w') as f:
@@ -358,6 +453,7 @@ def main():
     print(f"\nResults saved to:")
     print(f"  {out_path / 'rolling_eval.json'}")
     print(f"  {out_path / 'rolling_eval.csv'}")
+    print(f"  {out_path / 'seasonal_p90.csv'}")
     print(f"\n{'='*80}\n")
 
 

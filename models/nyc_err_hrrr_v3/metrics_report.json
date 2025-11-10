@@ -1,0 +1,82 @@
+{
+  "training_date": "2025-11-10T04:38:03.556994",
+  "version": "v3",
+  "data_file": "ml_training_data_final.csv",
+  "seed": 42,
+  "date_range": {
+    "start": "2021-01-01T00:00:00",
+    "end": "2025-10-30T00:00:00",
+    "total_days": 1727
+  },
+  "split": {
+    "train_days": 1667,
+    "val_days": 60
+  },
+  "feature_engineering": {
+    "version": "v3",
+    "added_features": 21,
+    "dropped_features": 2,
+    "final_features": 62,
+    "label_used": "err_hrrr_c_wins"
+  },
+  "validation_metrics": {
+    "hrrr_baseline": {
+      "mae": 0.8471
+    },
+    "global_l1": {
+      "mae": 0.7156
+    },
+    "global_huber": {
+      "mae": 0.6759
+    },
+    "global_quantile": {
+      "mae": 0.6759
+    },
+    "global_best": {
+      "mae": 0.6759,
+      "model": "quantile"
+    },
+    "blended": {
+      "mae": 0.6759
+    },
+    "debiased": {
+      "mae": 0.7948
+    },
+    "blended_debiased": {
+      "mae": 0.7948
+    }
+  },
+  "monthly_mae": {
+    "global": {
+      "month_09": 0.6479,
+      "month_10": 0.7039
+    },
+    "blended": {
+      "month_09": 0.7199,
+      "month_10": 0.8696
+    }
+  },
+  "seasonal_metrics": {
+    "baseline": {
+      "fall": {
+        "mae": 0.8471,
+        "p90": 1.8893,
+        "n": 60
+      }
+    },
+    "global": {
+      "fall": {
+        "mae": 0.6759,
+        "p90": 1.1685,
+        "n": 60
+      }
+    },
+    "blended": {
+      "fall": {
+        "mae": 0.7948,
+        "p90": 1.3977,
+        "n": 60
+      }
+    }
+  }
+}
