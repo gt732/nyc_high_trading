@@ -163,7 +163,7 @@ def main(
             "reg_lambda": 0.3,
             "device_type": "cpu",
             "max_bin": 255,
-            "verbosity": -1,
+            "verbosity": -1,  # leave this at -1 to reduce logs
             "ag_args_fit": {
                 "early_stopping_rounds": 200,
                 # optionally cap CPUs per worker to avoid oversubscription
