@@ -1,0 +1,55 @@
+{
+  "training_date": "2025-11-10T03:50:16.702195",
+  "data_file": "ml_training_data_final.csv",
+  "hist_file": "data/data_cleaned_ny.pkl",
+  "seed": 42,
+  "date_range": {
+    "start": "2021-01-01T00:00:00",
+    "end": "2025-10-30T00:00:00",
+    "total_days": 1727
+  },
+  "split": {
+    "train_days": 1667,
+    "val_days": 60
+  },
+  "feature_engineering": {
+    "added_features": 23,
+    "dropped_features": 2,
+    "final_features": 65,
+    "label_used": "err_hrrr_c_wins"
+  },
+  "validation_metrics": {
+    "hrrr_baseline": {
+      "mae": 0.8471
+    },
+    "global_huber": {
+      "mae": 0.7089
+    },
+    "global_l1": {
+      "mae": 0.7302
+    },
+    "global_best": {
+      "mae": 0.7089,
+      "model": "huber"
+    },
+    "ensemble": {
+      "mae": 0.7051
+    },
+    "global_calibrated": {
+      "mae": 0.7099
+    },
+    "ensemble_calibrated": {
+      "mae": 0.7092
+    }
+  },
+  "monthly_mae": {
+    "global": {
+      "month_09": 0.698,
+      "month_10": 0.7198
+    },
+    "ensemble": {
+      "month_09": 0.698,
+      "month_10": 0.7121
+    }
+  }
+}

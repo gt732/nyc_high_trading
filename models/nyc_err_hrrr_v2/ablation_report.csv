@@ -1,0 +1,5 @@
+feature_group,features_dropped,mae_without,delta_mae,impact
+cross_model_spreads,6,0.7139,0.005,negative
+dewpoint_depression,2,0.7173,0.0084,negative
+historical_context,7,0.6961,-0.0128,positive
+harmonics_2_3,4,0.6912,-0.0177,positive
